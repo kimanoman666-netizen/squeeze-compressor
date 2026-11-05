@@ -1,0 +1,81 @@
+name: Build plugin
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (VST3)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --target Squeeze_VST3 Squeeze_Standalone --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path build/Squeeze_artefacts/Release/VST3/Squeeze.vst3 -DestinationPath dist/Squeeze-Windows-VST3.zip
+          Compress-Archive -Path build/Squeeze_artefacts/Release/Standalone/Squeeze.exe -DestinationPath dist/Squeeze-Windows-Standalone.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Squeeze-Windows
+          path: dist/*.zip
+
+  macos:
+    name: macOS (VST3 + AU)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release --target Squeeze_VST3 Squeeze_AU --parallel 4
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cd build/Squeeze_artefacts/Release
+          ditto -c -k --keepParent VST3/Squeeze.vst3 ../../../dist/Squeeze-macOS-VST3.zip
+          ditto -c -k --keepParent AU/Squeeze.component ../../../dist/Squeeze-macOS-AU.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Squeeze-macOS
+          path: dist/*.zip
+
+  release:
+    name: Publish "latest" release
+    needs: [ windows, macos ]
+    if: always() && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/*.zip \
+            --target "${{ github.sha }}" \
+            --title "Squeeze - latest build" \
+            --notes "Windows: unzip Squeeze-Windows-VST3.zip and put the Squeeze.vst3 folder into C:\Program Files\Common Files\VST3, then rescan plugins in FL Studio." \
+            --latest
